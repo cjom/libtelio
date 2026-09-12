@@ -91,8 +91,12 @@ jobs:
           # so this is required even though the runner is already aarch64.
           # The `cc` crate needs it for C dependencies too.
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          # musl-tools provides musl-gcc: a C compiler for the runner's own arch
+          # (aarch64) that uses musl headers. The build step points the C
+          # dependencies at it through CC_aarch64_unknown_linux_musl.
+          sudo apt-get install -y gcc-aarch64-linux-gnu musl-tools
           aarch64-linux-gnu-gcc --version | head -1
+          command -v musl-gcc
 
       - name: Set up Rust for ${{ env.RUST_TARGET }}
         run: |
@@ -112,6 +116,11 @@ jobs:
           BYPASS_LLT_SECRETS: 1
           # Without this, build.rs falls back to "dev-unknown" in --version.
           LIBTELIO_COMMIT_SHA: ${{ needs.check_commits.outputs.short_sha }}
+          # C dependencies (aws-lc-sys) must be compiled against musl. Without this
+          # the cc crate falls back to the glibc aarch64-linux-gnu-gcc, whose glibc
+          # 2.39 headers (with fortify on by default) reference glibc-only symbols
+          # such as __fprintf_chk and __isoc23_strtol that cannot link against musl.
+          CC_aarch64_unknown_linux_musl: musl-gcc
         run: cargo build --release -p nordvpnlite --target "${{ env.RUST_TARGET }}"
 
       - name: Verify before publishing
@@ -120,7 +129,9 @@ jobs:
           [ -f "$BIN" ] || { echo "*** BINARY NOT PRODUCED ***"; exit 1; }
           file "$BIN"
           file "$BIN" | grep -q "ARM aarch64"     || { echo "*** WRONG ARCHITECTURE ***"; exit 1; }
-          file "$BIN" | grep -q "statically linked" || { echo "*** NOT STATIC - will not run on the router ***"; exit 1; }
+          # "static-pie linked" is what file(1) prints if a toolchain bump makes the
+          # target static-PIE; both run on the router.
+          file "$BIN" | grep -qE "statically linked|static-pie linked" || { echo "*** NOT STATIC - will not run on the router ***"; exit 1; }
           # The runner is aarch64, so the binary runs here directly.
           "./$BIN" --version
           "./$BIN" --version | grep -q "${{ needs.check_commits.outputs.short_sha }}" \
