@@ -84,7 +84,10 @@ needs be absolute, otherwise will be relative to `working-directory` when daemon
   possible options:
     * `manual` - do not configure interfaces automatically
     * `iproute` - systems using iproute2 command
-    * `uci` - OpenWRT systems using uci command
+    * `uci` - OpenWRT systems using uci command. While connected, all IPv6 is routed
+    into the tunnel, where it is dropped, so it cannot leak around the VPN. The route is
+    skipped when the kernel already has IPv6 off (`net.ipv6.conf.all.disable_ipv6` and
+    `net.ipv6.conf.default.disable_ipv6` both `1`)
   * `manage_dnsmasq` - Only used by the `uci` provider. If `true` (the default), the
   daemon points dnsmasq at the `dns` servers (`dhcp.@dnsmasq[0].noresolv` and `.server`,
   replacing existing entries such as split-DNS forwards) and advertises the tunnel MTU

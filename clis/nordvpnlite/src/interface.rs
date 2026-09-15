@@ -102,6 +102,21 @@ pub(crate) fn read_default_route_device() -> Option<String> {
     route_device(&route).map(str::to_owned)
 }
 
+/// Whether IPv6 is off for all current and future interfaces, given the contents of
+/// `net.ipv6.conf.all.disable_ipv6` and `net.ipv6.conf.default.disable_ipv6`.
+/// Unreadable values count as enabled.
+fn ipv6_disabled_from_sysctl(all: Option<&str>, default: Option<&str>) -> bool {
+    all.map(str::trim) == Some("1") && default.map(str::trim) == Some("1")
+}
+
+/// Whether the kernel has IPv6 turned off, so no IPv6 traffic can leak around the tunnel.
+fn kernel_ipv6_disabled() -> bool {
+    let read = |name: &str| {
+        std::fs::read_to_string(format!("/proc/sys/net/ipv6/conf/{name}/disable_ipv6")).ok()
+    };
+    ipv6_disabled_from_sysctl(read("all").as_deref(), read("default").as_deref())
+}
+
 /// MTU of the default-route (uplink) interface, if determinable.
 fn read_default_route_mtu() -> Option<u32> {
     let dev = read_default_route_device()?;
@@ -670,10 +685,18 @@ impl Uci {
         Ok(())
     }
 
+    // Helper to remove the route sending all IPv6 into the tunnel, if present
+    fn remove_ipv6_route(&self) -> Result<(), NordVpnLiteError> {
+        if execute(Command::new("uci").args(["get", "network.nordvpnlite_route6"])).is_ok() {
+            execute(Command::new("uci").args(["del", "network.nordvpnlite_route6"]))?;
+        }
+        Ok(())
+    }
+
     // Helper to restore settings IPv6 to initial state
     fn restore_ipv6(&self) -> Result<(), NordVpnLiteError> {
         // Remove rule routing all IPv6 into the tunnel
-        if let Err(e) = execute(Command::new("uci").args(["del", "network.nordvpnlite_route6"])) {
+        if let Err(e) = self.remove_ipv6_route() {
             error!("Error removing network.nordvpnlite_route6: {e}");
         }
 
@@ -841,10 +864,20 @@ impl ConfigureInterface for Uci {
             Command::new("uci").args(["set", &format!("network.nordvpnlite_route.table={table}")]),
         )?;
 
-        execute(Command::new("uci").args(["add", "network", "route6"]))?;
-        execute(Command::new("uci").args(["rename", "network.@route6[-1]=nordvpnlite_route6"]))?;
-        execute(Command::new("uci").args(["set", "network.nordvpnlite_route6.interface=tun"]))?;
-        execute(Command::new("uci").args(["set", "network.nordvpnlite_route6.target=::/0"]))?;
+        // Route all IPv6 into the tunnel, where it is dropped, so it cannot leak around the VPN.
+        // With IPv6 off in the kernel there is nothing to leak, and the route would only make
+        // LuCI report the tunnel as an IPv6 upstream.
+        if kernel_ipv6_disabled() {
+            info!("IPv6 is disabled in the kernel, not routing IPv6 into the tunnel");
+            self.remove_ipv6_route()?;
+        } else {
+            execute(Command::new("uci").args(["add", "network", "route6"]))?;
+            execute(
+                Command::new("uci").args(["rename", "network.@route6[-1]=nordvpnlite_route6"]),
+            )?;
+            execute(Command::new("uci").args(["set", "network.nordvpnlite_route6.interface=tun"]))?;
+            execute(Command::new("uci").args(["set", "network.nordvpnlite_route6.target=::/0"]))?;
+        }
 
         execute(Command::new("uci").args(["add", "network", "rule"]))?;
         execute(Command::new("uci").args(["rename", "network.@rule[-1]=nordvpnlite_vpn_rule"]))?;
@@ -1145,5 +1178,14 @@ mod tests {
         assert_eq!(tunnel_mtu_from_uplink(Some(1300)), 1280);
         assert_eq!(tunnel_mtu_from_uplink(Some(50)), 1280);
         assert_eq!(tunnel_mtu_from_uplink(None), 1420);
+    }
+
+    #[test]
+    fn test_ipv6_disabled_from_sysctl() {
+        assert!(ipv6_disabled_from_sysctl(Some("1\n"), Some("1\n")));
+        assert!(!ipv6_disabled_from_sysctl(Some("1\n"), Some("0\n")));
+        assert!(!ipv6_disabled_from_sysctl(Some("0\n"), Some("1\n")));
+        assert!(!ipv6_disabled_from_sysctl(Some("1\n"), None));
+        assert!(!ipv6_disabled_from_sysctl(None, None));
     }
 }
