@@ -19,7 +19,7 @@ on:
 
 env:
   RUST_TARGET: aarch64-unknown-linux-musl
-  GH_TOKEN: ${{ github.token }}
+  GH_TOKEN: ${{ secrets.REG_TOKEN }}
 
 concurrency:
   group: nordvpnlite-openwrt-release
