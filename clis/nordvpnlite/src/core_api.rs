@@ -28,6 +28,36 @@ const MAX_RETRIES: usize = 10;
 const REQUEST_TIMEOUT_SECONDS: u64 = 30;
 pub const DEFAULT_WIREGUARD_PORT: u16 = 51820;
 
+/// How API requests are retried.
+#[derive(Clone, Copy, Debug)]
+pub struct RetryPolicy {
+    /// Longest wait between attempts
+    max_backoff: Duration,
+    /// Give up after this many retries; `None` retries until success or a terminal error
+    max_retries: Option<usize>,
+    /// Limit for a single attempt, DNS resolution included
+    request_timeout: Duration,
+}
+
+impl RetryPolicy {
+    /// One-off CLI requests: back off up to 3 minutes, then give up.
+    pub const CLI: Self = Self {
+        max_backoff: Duration::from_secs(180),
+        max_retries: Some(MAX_RETRIES),
+        request_timeout: Duration::from_secs(REQUEST_TIMEOUT_SECONDS),
+    };
+
+    /// Daemon startup: there is no VPN until these requests succeed, and the health check
+    /// only starts after them. Failures here are usually transient (DNS or WAN not ready
+    /// early in boot), so retry quickly and never give up: exiting would leave procd to
+    /// respawn the daemon, which it stops doing after a few failures.
+    pub const DAEMON: Self = Self {
+        max_backoff: Duration::from_secs(10),
+        max_retries: None,
+        request_timeout: Duration::from_secs(15),
+    };
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
@@ -206,19 +236,24 @@ macro_rules! handle_api_error {
 pub(crate) async fn request_nordlynx_key(
     auth_token: &NordToken,
     cert_path: Option<&Path>,
+    policy: RetryPolicy,
 ) -> Result<SecretKey, Error> {
     info!("Requesting Nordlynx secret..");
-    let mut backoff = build_backoff()?;
+    let mut backoff = build_backoff(policy)?;
     let mut retries = 0;
 
     loop {
-        match send_request_nordlynx_key(auth_token, cert_path).await {
+        match send_request_nordlynx_key(auth_token, cert_path, policy.request_timeout).await {
             Ok(id) => return Ok(id),
             Err(e) => {
                 warn!("Failed to request Nordlynx secret due to {e:?}");
                 handle_api_error!(e)?;
-                warn!("Will wait for {:?} and retry", backoff.get_backoff());
-                wait_with_backoff_delay(&mut backoff, &mut retries).await?;
+                warn!(
+                    "Will wait for {:?} and retry (attempt {})",
+                    backoff.get_backoff(),
+                    retries + 2
+                );
+                wait_with_backoff_delay(&mut backoff, &mut retries, policy).await?;
             }
         }
     }
@@ -227,11 +262,13 @@ pub(crate) async fn request_nordlynx_key(
 async fn send_request_nordlynx_key(
     auth_token: &NordToken,
     cert_path: Option<&Path>,
+    timeout: Duration,
 ) -> Result<SecretKey, Error> {
     let client = http_client(cert_path);
     let response = client
         .get(format!("{API_BASE}/users/services/credentials"))
         .basic_auth("token", Some(auth_token as &str))
+        .timeout(timeout)
         .send()
         .await?;
 
@@ -254,10 +291,10 @@ async fn send_request_nordlynx_key(
     }
 }
 
-fn build_backoff() -> Result<ExponentialBackoff, Error> {
+fn build_backoff(policy: RetryPolicy) -> Result<ExponentialBackoff, Error> {
     let backoff_bounds = ExponentialBackoffBounds {
         initial: Duration::from_secs(1),
-        maximal: Some(Duration::from_secs(180)),
+        maximal: Some(policy.max_backoff),
     };
     Ok(ExponentialBackoff::new(backoff_bounds)?)
 }
@@ -265,9 +302,10 @@ fn build_backoff() -> Result<ExponentialBackoff, Error> {
 async fn wait_with_backoff_delay(
     backoff: &mut ExponentialBackoff,
     retries: &mut usize,
+    policy: RetryPolicy,
 ) -> Result<(), Error> {
     tokio::time::sleep(backoff.get_backoff()).await;
-    if *retries > MAX_RETRIES {
+    if policy.max_retries.is_some_and(|max| *retries > max) {
         return Err(Error::ExpBackoffTimeout());
     }
     backoff.next_backoff();
@@ -315,30 +353,35 @@ fn http_client(cert_path: Option<&Path>) -> Client {
 /// Get the list of countries with VPN servers from core API.
 pub async fn get_countries_with_exp_backoff(
     cert_path: Option<&Path>,
+    policy: RetryPolicy,
 ) -> Result<Vec<Country>, Error> {
-    let mut backoff = build_backoff()?;
+    let mut backoff = build_backoff(policy)?;
     let mut retries = 0;
 
     loop {
-        match get_countries(cert_path).await {
+        match get_countries(cert_path, policy.request_timeout).await {
             Ok(countries) => return Ok(countries),
             Err(e) => {
                 warn!("Failed to fetch countries due to {e}",);
                 handle_api_error!(e)?;
-                warn!("Will wait for {:?} and retry", backoff.get_backoff());
-                wait_with_backoff_delay(&mut backoff, &mut retries).await?;
+                warn!(
+                    "Will wait for {:?} and retry (attempt {})",
+                    backoff.get_backoff(),
+                    retries + 2
+                );
+                wait_with_backoff_delay(&mut backoff, &mut retries, policy).await?;
             }
         }
     }
 }
 
 /// Get the list of countries with VPN servers from core API.
-async fn get_countries(cert_path: Option<&Path>) -> Result<Vec<Country>, Error> {
+async fn get_countries(cert_path: Option<&Path>, timeout: Duration) -> Result<Vec<Country>, Error> {
     debug!("Getting countries list");
     let response = http_client(cert_path)
         .get(format!("{}/servers/countries", API_BASE))
         .header(header::ACCEPT, "application/json")
-        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECONDS))
+        .timeout(timeout)
         .send()
         .await
         .inspect_err(|err| warn!("Response error: {err:?}"))?;
@@ -365,18 +408,30 @@ pub async fn get_recommended_servers_with_exp_backoff(
     country_id_filter: Option<u64>,
     limit_filter: Option<u64>,
     cert_path: Option<&Path>,
+    policy: RetryPolicy,
 ) -> Result<Vec<Server>, Error> {
-    let mut backoff = build_backoff()?;
+    let mut backoff = build_backoff(policy)?;
     let mut retries = 0;
 
     loop {
-        match get_recommended_servers(country_id_filter, limit_filter, cert_path).await {
+        match get_recommended_servers(
+            country_id_filter,
+            limit_filter,
+            cert_path,
+            policy.request_timeout,
+        )
+        .await
+        {
             Ok(servers) => return Ok(servers),
             Err(e) => {
                 warn!("Failed to fetch recommended servers due to {e}",);
                 handle_api_error!(e)?;
-                warn!("Will wait for {:?} and retry", backoff.get_backoff());
-                wait_with_backoff_delay(&mut backoff, &mut retries).await?;
+                warn!(
+                    "Will wait for {:?} and retry (attempt {})",
+                    backoff.get_backoff(),
+                    retries + 2
+                );
+                wait_with_backoff_delay(&mut backoff, &mut retries, policy).await?;
             }
         }
     }
@@ -387,6 +442,7 @@ async fn get_recommended_servers(
     country_id_filter: Option<u64>,
     limit_filter: Option<u64>,
     cert_path: Option<&Path>,
+    timeout: Duration,
 ) -> Result<Vec<Server>, Error> {
     debug!(
         "Getting server recommendations list: country_id:{:?}, limit:{:?}",
@@ -415,7 +471,7 @@ async fn get_recommended_servers(
         .get(format!("{}/servers/recommendations", API_BASE))
         .header(header::ACCEPT, "application/json")
         .query(&filter)
-        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECONDS))
+        .timeout(timeout)
         .send()
         .await
         .inspect_err(|err| warn!("Response error: {err:?}"))?;
@@ -451,8 +507,11 @@ pub async fn get_server_endpoints_list(config: &NordVpnLiteConfig) -> Result<Vec
                 );
                 CountryResolution::FallbackToRecommended
             } else {
-                match get_countries_with_exp_backoff(config.http_certificate_file_path.as_deref())
-                    .await
+                match get_countries_with_exp_backoff(
+                    config.http_certificate_file_path.as_deref(),
+                    RetryPolicy::DAEMON,
+                )
+                .await
                 {
                     Ok(countries_list) => match countries_list.iter().find_map(|country| {
                         // search for country full name or iso code
@@ -497,6 +556,7 @@ pub async fn get_server_endpoints_list(config: &NordVpnLiteConfig) -> Result<Vec
         country_id,
         None,
         config.http_certificate_file_path.as_deref(),
+        RetryPolicy::DAEMON,
     )
     .await?
     .iter()
@@ -514,6 +574,39 @@ mod tests {
     use telio_core::telio_model::mesh::ExitNode;
 
     use super::*;
+
+    async fn retries_until_error(policy: RetryPolicy, limit: usize) -> Option<usize> {
+        let mut backoff = build_backoff(policy).unwrap();
+        let mut retries = 0;
+        for _ in 0..limit {
+            if wait_with_backoff_delay(&mut backoff, &mut retries, policy)
+                .await
+                .is_err()
+            {
+                return Some(retries);
+            }
+        }
+        None
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cli_policy_gives_up_after_max_retries() {
+        assert_eq!(
+            retries_until_error(RetryPolicy::CLI, MAX_RETRIES + 5).await,
+            Some(MAX_RETRIES + 1)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn daemon_policy_retries_forever_with_short_waits() {
+        assert_eq!(retries_until_error(RetryPolicy::DAEMON, 100).await, None);
+
+        let mut backoff = build_backoff(RetryPolicy::DAEMON).unwrap();
+        for _ in 0..20 {
+            backoff.next_backoff();
+        }
+        assert_eq!(backoff.get_backoff(), Duration::from_secs(10));
+    }
 
     #[test]
     fn test_parse_country() {

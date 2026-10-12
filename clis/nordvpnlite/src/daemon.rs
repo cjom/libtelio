@@ -41,7 +41,7 @@ use crate::{
     command_listener::CommandListener,
     comms::DaemonSocket,
     config::{Endpoint, NordVpnLiteConfig, RunningConfig},
-    core_api::{request_nordlynx_key, Error as ApiError, DEFAULT_WIREGUARD_PORT},
+    core_api::{request_nordlynx_key, Error as ApiError, RetryPolicy, DEFAULT_WIREGUARD_PORT},
     interface::ConfigureInterface,
 };
 
@@ -460,6 +460,7 @@ async fn run_daemon(config: RunningConfig) -> Result<LoopOutcome, NordVpnLiteErr
         let api_request_future = request_nordlynx_key(
             &auth_token,
             config.parsed.http_certificate_file_path.as_deref(),
+            RetryPolicy::DAEMON,
         );
         pin_mut!(api_request_future);
         loop {

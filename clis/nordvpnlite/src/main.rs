@@ -22,7 +22,7 @@ use crate::{
     command_listener::{ClientCmd, Cmd, CommandResponse, LoginOpts, LogoutOpts, TIMEOUT_SEC},
     comms::DaemonSocket,
     config::{NordVpnLiteConfig, RunningConfig},
-    core_api::get_countries_with_exp_backoff,
+    core_api::{get_countries_with_exp_backoff, RetryPolicy},
     daemon::NordVpnLiteError,
 };
 
@@ -152,7 +152,7 @@ async fn client_main(cmd: Cmd) -> Result<(), NordVpnLiteError> {
         }
         // Display list of available countries with VPN servers
         Cmd::Countries => {
-            for country in get_countries_with_exp_backoff(None).await? {
+            for country in get_countries_with_exp_backoff(None, RetryPolicy::CLI).await? {
                 println!("{}: {}", country.name, country.code);
             }
             Ok(())
