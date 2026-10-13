@@ -53,6 +53,27 @@ jobs:
           echo "$out"
           echo "merge_type=$(echo "$out" | jq -r '.merge_type // "unknown"')"
 
+      - name: Disable every other workflow
+        run: |
+          # Upstream workflow files arrive enabled: a new file is registered as
+          # active on the sync push, and none of them are meant to run here.
+          # Keep only this workflow active. Runs after every sync, so anything
+          # that slips through is disabled on the next run at the latest.
+          # Give GitHub a moment to register files added by the sync above.
+          sleep 20
+          self="${{ github.workflow_ref }}"
+          self="${self#${{ github.repository }}/}"
+          self="${self%@*}"
+          gh api --paginate "repos/${{ github.repository }}/actions/workflows" \
+            --jq '.workflows[] | select(.state == "active") | "\(.id) \(.path)"' \
+          | while read -r id path; do
+              # Skip GitHub-managed "dynamic/..." workflows and this one.
+              case "$path" in .github/workflows/*) ;; *) continue ;; esac
+              [ "$path" = "$self" ] && continue
+              echo "Disabling $path"
+              gh api -X PUT "repos/${{ github.repository }}/actions/workflows/$id/disable"
+            done
+
       - name: Check for new commits
         id: check_commits
         run: |
