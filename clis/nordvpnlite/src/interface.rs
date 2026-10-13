@@ -441,6 +441,16 @@ impl ConfigureInterface for Iproute {
     }
 }
 
+/// UCI sections set_exit_routes adds, all of which route traffic into the tunnel
+const EXIT_ROUTING_SECTIONS: [&str; 6] = [
+    "network.nordvpnlite_route",
+    "network.nordvpnlite_route6",
+    "network.nordvpnlite_vpn_rule",
+    "network.nordvpnlite_lan_rule",
+    "firewall.nordvpnlite_vpn_zone",
+    "firewall.nordvpnlite_vpn_forwarding",
+];
+
 /// UCI-based implementation for managing network configuration on OpenWRT devices.
 #[derive(Debug)]
 pub struct Uci {
@@ -784,6 +794,35 @@ impl Uci {
         }
     }
 
+    /// Remove exit routing that a previous run left in UCI without cleaning it up, e.g. when
+    /// a sysupgrade saved /etc/config while the VPN was up, or after a crash or power loss.
+    /// netifd applies those sections as soon as the tun interface comes up, sending all
+    /// traffic, API requests and DNS included, into a tunnel with no exit node yet. The
+    /// server list could then never be fetched.
+    fn remove_stale_exit_routes(&self) -> Result<(), NordVpnLiteError> {
+        let stale: Vec<&str> = EXIT_ROUTING_SECTIONS
+            .iter()
+            .copied()
+            .filter(|section| execute(Command::new("uci").args(["get", section])).is_ok())
+            .collect();
+        if stale.is_empty() {
+            return Ok(());
+        }
+
+        warn!(
+            "Removing exit routing left over from a previous run: {}",
+            stale.join(", ")
+        );
+        for section in &stale {
+            execute(Command::new("uci").args(["del", section]))?;
+        }
+        if stale.iter().any(|section| section.starts_with("firewall.")) {
+            self.reload_firewall()?;
+        }
+        // The network changes are applied by the reload in set_ip, which follows initialize
+        Ok(())
+    }
+
     fn remove_interface(&mut self) {
         debug!("Removing interface");
         if let Err(e) = execute(Command::new("uci").args(["del", "network.tun"])) {
@@ -794,6 +833,8 @@ impl Uci {
 
 impl ConfigureInterface for Uci {
     fn initialize(&mut self) -> Result<(), NordVpnLiteError> {
+        self.remove_stale_exit_routes()?;
+
         // add new interface if not present
         match execute(Command::new("uci").args(["get", "network.tun"])) {
             Ok(()) => {
