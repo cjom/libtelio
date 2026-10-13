@@ -156,6 +156,17 @@ jobs:
             || { echo "*** --version does not report ${{ needs.check_commits.outputs.short_sha }} ***"; exit 1; }
           mkdir -p out
           cp -v "$BIN" out/nordvpnlite
+          # telio_utils::version_tag() is a fixed-size VERSION_PLACEHOLDER@@@...
+          # string that upstream patches into the binary at release time. Left
+          # as is, it shows up in the "Created libtelio instance" log line and
+          # in the User-Agent sent to the relay and ENS servers.
+          python3 ci/replace_string.py -f out/nordvpnlite \
+            -t "$(sed -n 's/^VERSION_PLACEHOLDER = "\(.*\)"$/\1/p' ci/insert_libtelio_version.py)" \
+            -n "nordvpnlite-${{ needs.check_commits.outputs.short_sha }}" \
+            | tee /dev/stderr | grep -q "Replacement successful" \
+            || { echo "*** VERSION PLACEHOLDER NOT REPLACED ***"; exit 1; }
+          ! grep -q VERSION_PLACEHOLDER out/nordvpnlite \
+            || { echo "*** VERSION PLACEHOLDER STILL IN BINARY ***"; exit 1; }
           # Stripped: this lands inside a firmware image.
           aarch64-linux-gnu-strip out/nordvpnlite
           ls -l out/nordvpnlite
