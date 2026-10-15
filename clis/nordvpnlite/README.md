@@ -99,8 +99,10 @@ needs be absolute, otherwise will be relative to `working-directory` when daemon
   * `enabled` - `true` to turn it on. Defaults to `false`
   * `interval_seconds` - seconds between probes. Defaults to `15`
   * `probe_timeout_seconds` - seconds before a probe counts as failed. Defaults to `5`
-  * `failure_threshold` - consecutive failed tunnel probes, while the uplink works,
-  before switching server. Defaults to `4`
+  * `failure_threshold` - failed tunnel probes, while the uplink works, within the last
+  `failure_window` probes before switching server. Defaults to `4`
+  * `failure_window` - number of most recent probes `failure_threshold` is counted over.
+  Defaults to `8`; set it equal to `failure_threshold` to require consecutive failures
   * `settle_seconds` - seconds to wait after connecting or switching before probing
   again. Defaults to `30`
   * `probe_targets` - TCP `address:port` endpoints; a probe succeeds if any of them
@@ -111,6 +113,8 @@ needs be absolute, otherwise will be relative to `working-directory` when daemon
   Each probe opens a TCP connection through the tunnel interface. When that fails, the
   probe is repeated through the uplink, and only a failing tunnel with a working uplink
   counts towards `failure_threshold`, so an ISP outage does not cause server switching.
+  Counting within a window, rather than consecutively, also catches a server that drops
+  a large share of packets: its probes fail often, but rarely several times in a row.
   The next server is taken from the list fetched at startup, because the API may be
   unreachable while the tunnel is down. With a fixed `vpn.server`, the daemon reconnects
   to that server instead.

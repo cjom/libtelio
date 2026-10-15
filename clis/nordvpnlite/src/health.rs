@@ -6,11 +6,14 @@
 //! server switch could fix, so the failure count resets instead of growing. That
 //! comparison keeps an ISP outage from causing pointless server churn.
 //!
-//! After `failure_threshold` consecutive broken-tunnel probes, the daemon switches to the
-//! next server from the list fetched at startup. The API is not queried again: with exit
-//! routing in place, its requests would be routed into the tunnel that is down.
+//! Once `failure_threshold` of the last `failure_window` probes found the tunnel broken,
+//! the daemon switches to the next server from the list fetched at startup. Counting
+//! within a window rather than consecutively also catches a server that drops a large
+//! share of packets: its probes fail often, but rarely several times in a row. The API
+//! is not queried again: with exit routing in place, its requests would be routed into
+//! the tunnel that is down.
 
-use std::{net::SocketAddr, time::Duration};
+use std::{collections::VecDeque, net::SocketAddr, time::Duration};
 
 use futures::future::select_ok;
 use tokio::{net::TcpSocket, sync::mpsc, time};
@@ -46,14 +49,15 @@ pub(crate) async fn run(
     let interval = Duration::from_secs(health_check.interval_seconds.max(1));
     let probe_timeout = Duration::from_secs(health_check.probe_timeout_seconds.max(1));
     let settle = Duration::from_secs(health_check.settle_seconds);
-    let threshold = health_check.failure_threshold.max(1);
+    let mut failures =
+        FailureWindow::new(health_check.failure_threshold, health_check.failure_window);
+    let (threshold, window) = (failures.threshold, failures.window);
 
     info!(
-        "Health check started on {tunnel}: probing every {interval:?}, switching after {threshold} consecutive failures ({} servers)",
+        "Health check started on {tunnel}: probing every {interval:?}, switching after {threshold} failures in {window} probes ({} servers)",
         rotation.len()
     );
 
-    let mut failures = 0;
     let mut uplink_down = false;
     time::sleep(settle).await;
 
@@ -61,10 +65,10 @@ pub(crate) async fn run(
         time::sleep(interval).await;
 
         if probe(tunnel, &health_check.probe_targets, probe_timeout).await {
-            if failures > 0 || uplink_down {
+            if failures.last_failed() || uplink_down {
                 info!("Tunnel probe through {tunnel} succeeded again");
             }
-            failures = 0;
+            failures.record(false);
             uplink_down = false;
             continue;
         }
@@ -84,17 +88,19 @@ pub(crate) async fn run(
                 warn!("Tunnel probe failed, but uplink {uplink} is unreachable too; not switching servers");
                 uplink_down = true;
             }
-            failures = 0;
+            failures.clear();
             continue;
         }
         uplink_down = false;
 
-        failures += 1;
-        warn!("Tunnel probe through {tunnel} failed while uplink {uplink} works ({failures}/{threshold})");
-        if failures < threshold {
+        let count = failures.record(true);
+        warn!(
+            "Tunnel probe through {tunnel} failed while uplink {uplink} works ({count}/{threshold} in last {window} probes)"
+        );
+        if count < threshold {
             continue;
         }
-        failures = 0;
+        failures.clear();
 
         let Some(endpoint) = rotation.next_server() else {
             error!("Health check has no server to switch to");
@@ -120,6 +126,43 @@ pub(crate) async fn run(
     }
 
     debug!("Health check stopped");
+}
+
+/// Outcomes of the most recent probes, `true` for a broken tunnel.
+struct FailureWindow {
+    threshold: usize,
+    window: usize,
+    recent: VecDeque<bool>,
+}
+
+impl FailureWindow {
+    /// `threshold` is at least 1, and `window` at least `threshold`.
+    fn new(threshold: u32, window: u32) -> Self {
+        let threshold = (threshold as usize).max(1);
+        let window = (window as usize).max(threshold);
+        Self {
+            threshold,
+            window,
+            recent: VecDeque::with_capacity(window),
+        }
+    }
+
+    /// Record a probe outcome and return the failures now in the window.
+    fn record(&mut self, failed: bool) -> usize {
+        if self.recent.len() == self.window {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(failed);
+        self.recent.iter().filter(|&&f| f).count()
+    }
+
+    fn last_failed(&self) -> bool {
+        self.recent.back().copied().unwrap_or(false)
+    }
+
+    fn clear(&mut self) {
+        self.recent.clear();
+    }
 }
 
 /// Cycles through the server list, starting after the entry currently in use.
@@ -231,6 +274,60 @@ mod tests {
         let mut rotation = Rotation::new(Vec::new());
         assert!(rotation.is_empty());
         assert!(rotation.next_server().is_none());
+    }
+
+    fn record_all(window: &mut FailureWindow, outcomes: &[bool]) -> Vec<usize> {
+        outcomes
+            .iter()
+            .map(|&failed| window.record(failed))
+            .collect()
+    }
+
+    #[test]
+    fn failure_window_counts_failures_that_are_not_consecutive() {
+        // A lossy server: every other probe fails, never twice in a row.
+        let mut window = FailureWindow::new(3, 6);
+        assert_eq!(
+            record_all(&mut window, &[true, false, true, false, true]),
+            [1, 1, 2, 2, 3]
+        );
+    }
+
+    #[test]
+    fn failure_window_forgets_failures_older_than_the_window() {
+        let mut window = FailureWindow::new(3, 4);
+        assert_eq!(
+            record_all(&mut window, &[true, true, false, false, false, true]),
+            [1, 2, 2, 2, 1, 1]
+        );
+    }
+
+    #[test]
+    fn failure_window_equal_to_threshold_requires_consecutive_failures() {
+        let mut window = FailureWindow::new(3, 3);
+        assert_eq!(
+            record_all(&mut window, &[true, true, false, true, true, true]),
+            [1, 2, 2, 2, 2, 3]
+        );
+    }
+
+    #[test]
+    fn failure_window_is_never_smaller_than_threshold() {
+        let window = FailureWindow::new(5, 2);
+        assert_eq!((window.threshold, window.window), (5, 5));
+        let window = FailureWindow::new(0, 0);
+        assert_eq!((window.threshold, window.window), (1, 1));
+    }
+
+    #[test]
+    fn failure_window_clear_and_last_failed() {
+        let mut window = FailureWindow::new(2, 4);
+        assert!(!window.last_failed());
+        window.record(true);
+        assert!(window.last_failed());
+        window.clear();
+        assert!(!window.last_failed());
+        assert_eq!(window.record(true), 1);
     }
 
     #[tokio::test]

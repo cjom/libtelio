@@ -441,9 +441,9 @@ pub enum VpnConfig {
 ///
 /// Periodically opens a TCP connection to one of `probe_targets` through the tunnel
 /// interface. When that fails, the same probe is sent through the uplink: only a working
-/// uplink marks the tunnel as broken, so an ISP outage never causes server churn. After
-/// `failure_threshold` consecutive broken-tunnel probes the daemon switches to the next
-/// server from the list it fetched at startup.
+/// uplink marks the tunnel as broken, so an ISP outage never causes server churn. Once
+/// `failure_threshold` of the last `failure_window` probes found the tunnel broken, the
+/// daemon switches to the next server from the list it fetched at startup.
 #[derive(PartialEq, Eq, Serialize, Deserialize, Debug, Clone)]
 #[serde(default, deny_unknown_fields)]
 pub struct HealthCheckConfig {
@@ -453,8 +453,11 @@ pub struct HealthCheckConfig {
     pub interval_seconds: u64,
     /// Seconds a probe may take before it counts as failed
     pub probe_timeout_seconds: u64,
-    /// Consecutive broken-tunnel probes before switching exit node
+    /// Broken-tunnel probes within `failure_window` before switching exit node
     pub failure_threshold: u32,
+    /// Number of most recent probes `failure_threshold` is counted over; raised to
+    /// `failure_threshold` if smaller, which then means consecutive failures
+    pub failure_window: u32,
     /// Seconds to wait after connecting or switching before probing again
     pub settle_seconds: u64,
     /// TCP endpoints to probe; a probe succeeds if any of them accepts a connection
@@ -470,6 +473,7 @@ impl Default for HealthCheckConfig {
             interval_seconds: 15,
             probe_timeout_seconds: 5,
             failure_threshold: 4,
+            failure_window: 8,
             settle_seconds: 30,
             // Port 443 rather than 53: VPN servers may intercept or block DNS to
             // third-party resolvers, which would make every probe fail.
@@ -1123,6 +1127,7 @@ mod tests {
                 "interval_seconds": 20,
                 "probe_timeout_seconds": 3,
                 "failure_threshold": 5,
+                "failure_window": 10,
                 "settle_seconds": 45,
                 "probe_targets": ["1.0.0.1:443", "[2606:4700:4700::1111]:443"],
                 "wan_interface": "eth1"
@@ -1154,6 +1159,7 @@ mod tests {
                 interval_seconds: 20,
                 probe_timeout_seconds: 3,
                 failure_threshold: 5,
+                failure_window: 10,
                 settle_seconds: 45,
                 probe_targets: vec![
                     "1.0.0.1:443".parse().unwrap(),
