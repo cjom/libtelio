@@ -10,14 +10,9 @@ pub fn commit_sha() -> &'static str {
 #[allow(clippy::indexing_slicing)]
 pub fn version_tag() -> &'static str {
     static VER: [u8;129] = *b"VERSION_PLACEHOLDER@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\0";
-    // black_box keeps the compiler from finding the terminator at build time, which
-    // would fix the length at 128 and keep the NUL padding of a shorter patched version.
     let ver: &'static [u8; 129] = std::hint::black_box(&VER);
     match ver.iter().position(|v| *v == 0) {
-        Some(i) => match std::str::from_utf8(&ver[..i]) {
-            Ok(s) => s,
-            Err(_) => "not_a_utf8_string",
-        },
+        Some(i) => std::str::from_utf8(&ver[..i]).unwrap_or("not_a_utf8_string"),
         None => "incorrect_version_string",
     }
 }

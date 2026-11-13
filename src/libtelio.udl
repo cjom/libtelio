@@ -80,6 +80,8 @@ interface Location {
 
 interface Backtrace {
     sequence<Location> functions();
+    /// Functions in one line, innermost first, for example `a -> b -> c`
+    string as_string();
 };
 
 [Error]
@@ -637,6 +639,10 @@ interface Telio {
     /// For testing only.
     [Throws=TelioError]
     void generate_thread_panic();
+
+    /// For testing only. Returns an error created by a chain of nested calls.
+    [Throws=TelioError]
+    void generate_error(boolean from_async);
 };
 
 callback interface TelioEventCb {
@@ -772,26 +778,7 @@ enum Cipher {
 
 /// Connection configuration for VPN or meshnet exit-node connections.
 /// Produced by [`VpnConnectionConfigBuilder`] or [`MeshnetConnectionConfigBuilder`].
-dictionary ConnectionConfig {
-    /// Optional stable identifier for the exit node.
-    /// If null, a random UUID is generated at connect time.
-    string? identifier;
-    /// WireGuard public key of the exit node.
-    PublicKey public_key;
-    /// Subnets routed through the exit node. Null is equivalent to "0.0.0.0/0".
-    sequence<IpNet>? allowed_ips;
-    /// Direct UDP endpoint (IP:port) of the exit node.
-    /// Always set for VPN connections; always null for meshnet peer exit.
-    SocketAddr? endpoint;
-    /// When true, a post-quantum tunnel is established (VPN connections only).
-    boolean post_quantum;
-    /// Ciphers supported by the VPN server (NepTUN only). Null for meshnet.
-    sequence<Cipher>? supported_ciphers;
-    /// Override the default PQ upgrader IP used for post-quantum key exchange.
-    /// When null, the default 10.5.0.1 is used.
-    /// Only meaningful for VPN connections with post-quantum enabled.
-    Ipv4Addr? pq_upgrader_ip;
-};
+interface ConnectionConfig { };
 
 /// Builder for VPN exit-node connections where a direct UDP endpoint is known.
 ///

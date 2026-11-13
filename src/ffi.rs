@@ -41,6 +41,7 @@ use telio_utils::{
 };
 
 const DEFAULT_PANIC_MSG: &str = "libtelio panicked";
+const GENERATED_ERROR_MESSAGE: &str = "generated_error_test_call_stack";
 
 pub type FfiResult<T> = Result<T, Arc<TelioError>>;
 
@@ -802,7 +803,7 @@ impl Telio {
     /// # Parameters
     /// - `config`: Connection configuration produced by [`connection_config::VpnConnectionConfigBuilder`]
     ///   or [`connection_config::MeshnetConnectionConfigBuilder`].
-    pub fn connect_to_exit_node_with_config(&self, config: ConnectionConfig) -> FfiResult<()> {
+    pub fn connect_to_exit_node_with_config(&self, config: Arc<ConnectionConfig>) -> FfiResult<()> {
         telio_log_info!(
             "Telio::connect_to_exit_node_with_config entry with instance id :{}. Identifier: {:?}, Public Key: {:?}. Allowed IPs: {:?}. Endpoint: {:?}. PostQuantum: {:?}. Ciphers: {:?}. Custom PQ upgrader IP: {:?}.",
             self.id,
@@ -816,7 +817,7 @@ impl Telio {
         );
         catch_ffi_panic(|| {
             self.device_op(true, |dev| {
-                let cfg = config.clone();
+                let cfg = Arc::clone(&config);
                 if cfg.post_quantum {
                     dev.connect_vpn_post_quantum(cfg)
                         .log_result("Telio::connect_to_exit_node_with_config (post-quantum)")
@@ -1140,6 +1141,38 @@ impl Telio {
             })
         })
     }
+
+    /// For testing only.
+    pub fn generate_error(&self, from_async: bool) -> FfiResult<()> {
+        if from_async {
+            catch_ffi_panic(|| {
+                self.device_op(true, |dev| {
+                    dev.generate_async_backtrace()
+                        .map_err(TelioError::from_device)
+                })
+            })
+        } else {
+            catch_ffi_panic(foo)
+        }
+    }
+}
+
+fn foo() -> FfiResult<()> {
+    bar()
+}
+
+fn bar() -> FfiResult<()> {
+    baz()
+}
+
+fn baz() -> FfiResult<()> {
+    quux()
+}
+
+fn quux() -> FfiResult<()> {
+    Err(TelioError::new(TelioErrorVariant::UnknownError {
+        inner: GENERATED_ERROR_MESSAGE.to_owned(),
+    }))
 }
 
 /// cbindgen:ignore
