@@ -4,7 +4,7 @@ use regex_lite::Regex;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::process::Command;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use telio_core::telio_model::constants::LOCAL_TUNNEL_IPV4;
 #[cfg(target_os = "linux")]
