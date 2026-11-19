@@ -4,6 +4,7 @@ import getpass
 import os
 import sys
 import debug_ids
+from binary_version import set_framework_info_plist_versions
 import moose_utils
 from fetch_artifacts import ArtifactsDownloader
 import shutil
@@ -464,7 +465,7 @@ LIBTELIO_CONFIG = {
 
 def main() -> None:
     parser = rutils.create_cli_parser()
-    (build_parser, bindings_parser, lipo_parser, fetch_artifacts_parser) = (
+    build_parser, bindings_parser, lipo_parser, fetch_artifacts_parser = (
         parser._subparsers._group_actions[0].choices["build"],
         parser._subparsers._group_actions[0].choices["bindings"],
         parser._subparsers._group_actions[0].choices["lipo"],
@@ -554,6 +555,13 @@ def main() -> None:
             headers,
             "libtelio.dylib",
         )
+        # BUILD_TAG is exported by libtelio-build's .build-tag CI template
+        if version := os.environ.get("BUILD_TAG"):
+            set_framework_info_plist_versions(
+                Path(PROJECT_CONFIG.get_darwin_distribution_dir()),
+                "telioFFI",
+                version,
+            )
     elif args.command == "build-ios-simulator-stubs":
         dbu.build_stub_ios_simulator_libraries(
             PROJECT_CONFIG,
