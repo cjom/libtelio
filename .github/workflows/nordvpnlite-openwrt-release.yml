@@ -160,8 +160,18 @@ jobs:
           # string that upstream patches into the binary at release time. Left
           # as is, it shows up in the "Created libtelio instance" log line and
           # in the User-Agent sent to the relay and ENS servers.
+          # Upstream has moved the constant between ci/ scripts before, so
+          # look for it in all of them. It must resolve to exactly one
+          # non-empty value: an empty -t matches everywhere in the binary.
+          PLACEHOLDER="$(sed -n 's/^VERSION_PLACEHOLDER = "\(.*\)"$/\1/p' ci/*.py | sort -u)"
+          case "$PLACEHOLDER" in
+            VERSION_PLACEHOLDER@*) ;;
+            *) echo "*** VERSION_PLACEHOLDER not found exactly once in ci/*.py: '$PLACEHOLDER' ***"; exit 1 ;;
+          esac
+          [ "$(printf '%s\n' "$PLACEHOLDER" | wc -l)" -eq 1 ] \
+            || { echo "*** CONFLICTING VERSION_PLACEHOLDER values in ci/*.py ***"; exit 1; }
           python3 ci/replace_string.py -f out/nordvpnlite \
-            -t "$(sed -n 's/^VERSION_PLACEHOLDER = "\(.*\)"$/\1/p' ci/insert_libtelio_version.py)" \
+            -t "$PLACEHOLDER" \
             -n "nordvpnlite-${{ needs.check_commits.outputs.short_sha }}" \
             | tee /dev/stderr | grep -q "Replacement successful" \
             || { echo "*** VERSION PLACEHOLDER NOT REPLACED ***"; exit 1; }
