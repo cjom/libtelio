@@ -272,7 +272,7 @@ impl TelioContext {
         match connect_result {
             Ok(_) => {
                 info!(
-                    "Connected to {kind}exit node: {} ({}) [{}]",
+                    "Connected to {kind}exit node: {} ({:?}) [{}]",
                     exit_node.endpoint.address,
                     exit_node.endpoint.public_key,
                     exit_node.endpoint.hostname.as_deref().unwrap_or_default()
@@ -629,7 +629,7 @@ fn handle_telio_event(event: Box<Event>) {
             match body.state {
                 NodeState::Connected => {
                     info!(
-                        "Node connected: {} ({})",
+                        "Node connected: {} ({:?})",
                         body.hostname.as_deref().unwrap_or(&body.identifier),
                         body.public_key
                     );
@@ -639,20 +639,20 @@ fn handle_telio_event(event: Box<Event>) {
                 }
                 NodeState::Connecting => {
                     info!(
-                        "Node connecting: {} ({})",
+                        "Node connecting: {} ({:?})",
                         body.hostname.as_deref().unwrap_or(&body.identifier),
                         body.public_key
                     );
                 }
                 NodeState::Disconnected => {
                     info!(
-                        "Node disconnected: {} ({})",
+                        "Node disconnected: {} ({:?})",
                         body.hostname.as_deref().unwrap_or(&body.identifier),
                         body.public_key
                     );
                     if body.is_exit {
                         info!(
-                            "Exit node connection lost: {} ({})",
+                            "Exit node connection lost: {} ({:?})",
                             body.hostname.as_deref().unwrap_or(&body.identifier),
                             body.public_key
                         );

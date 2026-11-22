@@ -80,7 +80,7 @@ impl SessionKeeper {
 
     #[cfg(test)]
     async fn get_pinger(&self) -> Result<Pinger> {
-        task_exec!(&self.task, async move |s| Ok(s.pinger.clone()))
+        task_exec!(&self.task, async move |s| s.pinger.clone())
             .await
             .map_err(Error::from)
     }
@@ -96,14 +96,14 @@ impl SessionKeeperTrait for SessionKeeper {
     ) -> Result<()> {
         let dual_target = DualTarget::new(target).map_err(ErrorVariant::DualTargetError)?;
 
-        telio_log_debug!("Add peer: {} with interval: {:?}", public_key, interval);
+        telio_log_debug!("Add peer: {:?} with interval: {:?}", public_key, interval);
 
         task_exec!(&self.task, async move |s| {
             if s.actions.contains_action(&public_key) {
                 let _ = s.actions.remove_action(&public_key);
             }
 
-            Ok(s.actions.add_action(
+            s.actions.add_action(
                 public_key,
                 interval,
                 Arc::new(move |c| {
@@ -118,13 +118,13 @@ impl SessionKeeperTrait for SessionKeeper {
                         Ok(())
                     })
                 }),
-            ))
+            )
         })
         .await
         .map_err(ErrorVariant::Task)?
         .map_err(ErrorVariant::RepeatedActionError)?;
 
-        telio_log_debug!("Added {}", public_key);
+        telio_log_debug!("Added {:?}", public_key);
         Ok(())
     }
 
@@ -132,7 +132,6 @@ impl SessionKeeperTrait for SessionKeeper {
         let pk = *key;
         task_exec!(&self.task, async move |s| {
             let _ = s.actions.remove_action(&pk);
-            Ok(())
         })
         .await?;
 
@@ -142,7 +141,6 @@ impl SessionKeeperTrait for SessionKeeper {
     async fn reset_keepalives(&self) -> Result<()> {
         task_exec!(&self.task, async move |s| {
             s.actions.reset_all_actions();
-            Ok(())
         })
         .await
         .map_err(Error::from)
@@ -169,7 +167,7 @@ impl Runtime for State {
                 action(self)
                     .await
                     .map_or_else(|e| {
-                        telio_log_warn!("({}) Error sending keepalive to {} node: {}", Self::NAME, pk, e.to_string());
+                        telio_log_warn!("({}) Error sending keepalive to {:?} node: {}", Self::NAME, pk, e.to_string());
                         Ok::<(), ()>(())
                     }, |_| Ok(()))?;
             }
