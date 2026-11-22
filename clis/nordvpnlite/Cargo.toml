@@ -40,6 +40,7 @@ daemonize = "0.5.0"
 rand.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 serial_test.workspace = true
 temp-dir = "0.2.0"
 temp-file = "0.2.0"
